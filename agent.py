@@ -18,7 +18,42 @@ Usage (once implemented):
     print(result["error"])   # None on success
 """
 
+import re
+
 from tools import search_listings, suggest_outfit, create_fit_card
+
+
+# ── query parsing ─────────────────────────────────────────────────────────────
+
+def _parse_query(query: str) -> dict:
+    """
+    Extract a description, size, and max_price from a natural language query
+    using regex/string splitting (no LLM call — see planning.md for why).
+    """
+    first_sentence = re.split(r"[.?!]", query.strip())[0].strip()
+    remainder = first_sentence
+
+    max_price = None
+    price_match = re.search(r"under\s*\$?\s*(\d+(?:\.\d+)?)", remainder, re.IGNORECASE)
+    if not price_match:
+        price_match = re.search(r"\$\s*(\d+(?:\.\d+)?)", remainder)
+    if price_match:
+        max_price = float(price_match.group(1))
+        remainder = remainder[:price_match.start()] + remainder[price_match.end():]
+
+    size = None
+    size_match = re.search(r"\bsize\s+([A-Za-z0-9/]+)\b", remainder, re.IGNORECASE)
+    if size_match:
+        size = size_match.group(1)
+        remainder = remainder[:size_match.start()] + remainder[size_match.end():]
+
+    description = remainder
+    description = re.sub(r"(?i)^\s*i'?m\s+", "", description)
+    description = re.sub(r"(?i)^\s*(looking for|searching for|in the market for)\s+", "", description)
+    description = re.sub(r"(?i)^\s*(a|an|the)\s+", "", description)
+    description = re.sub(r"[,\s]+", " ", description).strip(" ,")
+
+    return {"description": description, "size": size, "max_price": max_price}
 
 
 # ── session state ─────────────────────────────────────────────────────────────
@@ -92,9 +127,44 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     Before writing code, complete the Planning Loop and State Management sections
     of planning.md — your implementation should match what you described there.
     """
-    # TODO: implement the planning loop
     session = _new_session(query, wardrobe)
-    session["error"] = "Planning loop not yet implemented."
+
+    session["parsed"] = _parse_query(query)
+
+    search_results = search_listings(
+        description=session["parsed"]["description"],
+        size=session["parsed"]["size"],
+        max_price=session["parsed"]["max_price"],
+    )
+    session["search_results"] = search_results
+
+    if not search_results:
+        price = session["parsed"]["max_price"]
+        price_clause = f" under ${price:g}" if price is not None else ""
+        session["error"] = (
+            f"No listings matched '{session['parsed']['description']}'{price_clause}. "
+            "Try raising your price limit, dropping the size filter, or using a "
+            "broader description."
+        )
+        return session
+
+    session["selected_item"] = search_results[0]
+
+    outfit_suggestion = suggest_outfit(
+        new_item=session["selected_item"],
+        wardrobe=session["wardrobe"],
+    )
+    session["outfit_suggestion"] = outfit_suggestion
+
+    if not outfit_suggestion or not outfit_suggestion.strip():
+        session["error"] = "Could not generate an outfit suggestion."
+        return session
+
+    session["fit_card"] = create_fit_card(
+        outfit=session["outfit_suggestion"],
+        new_item=session["selected_item"],
+    )
+
     return session
 
 

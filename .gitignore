@@ -9,6 +9,9 @@ __pycache__/
 venv/
 env/
 
+# Testing
+.pytest_cache/
+
 # Jupyter
 .ipynb_checkpoints/
 
